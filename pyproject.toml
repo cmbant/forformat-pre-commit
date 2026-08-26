@@ -1,6 +1,6 @@
 [project]
 name = "forformat-pre-commit"
-version = "0.1.4"
+version = "0"
 dependencies = [
     "forformat==0.1.4",
 ]
