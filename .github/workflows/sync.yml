@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Find latest PyPI release
+      - name: Find complete PyPI release
         id: release
         shell: bash
         run: |
@@ -36,10 +36,36 @@ jobs:
           from urllib.request import urlopen
 
           with urlopen("https://pypi.org/pypi/forformat/json") as response:
-              version = json.load(response)["info"]["version"]
+              data = json.load(response)
 
+          version = data["info"]["version"]
           if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
               raise SystemExit(f"unexpected forformat version from PyPI: {version!r}")
+
+          filenames = {
+              item["filename"]
+              for item in data["releases"].get(version, [])
+              if not item.get("yanked", False)
+          }
+          required_platforms = (
+              "manylinux_2_17_x86_64.musllinux_1_2_x86_64.whl",
+              "manylinux_2_17_aarch64.musllinux_1_2_aarch64.whl",
+              "macosx_10_12_x86_64.whl",
+              "macosx_11_0_arm64.whl",
+              "win_amd64.whl",
+              "win_arm64.whl",
+          )
+          missing = [
+              platform
+              for platform in required_platforms
+              if not any(filename.endswith(platform) for filename in filenames)
+          ]
+          if missing:
+              raise SystemExit(
+                  f"forformat {version} is not fully published yet; missing wheels: "
+                  + ", ".join(missing)
+              )
+
           print(version)
           PY
           )
