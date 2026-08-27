@@ -1,9 +1,12 @@
 name: Sync forformat release
 
 on:
-  schedule:
-    - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "forformat version to sync (blank = latest PyPI release)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -23,25 +26,29 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Find complete PyPI release
+      - name: Resolve complete PyPI release
         id: release
         shell: bash
         run: |
           set -euo pipefail
 
-          python - "$GITHUB_OUTPUT" <<'PY'
+          python - "$GITHUB_OUTPUT" "${{ inputs.version }}" <<'PY'
           import json
           import re
           import sys
           from urllib.request import urlopen
 
           output = sys.argv[1]
+          requested = sys.argv[2].strip()
+          if requested.startswith("v"):
+              requested = requested[1:]
+
           with urlopen("https://pypi.org/pypi/forformat/json") as response:
               data = json.load(response)
 
-          version = data["info"]["version"]
+          version = requested or data["info"]["version"]
           if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
-              raise SystemExit(f"unexpected forformat version from PyPI: {version!r}")
+              raise SystemExit(f"unexpected forformat version: {version!r}")
 
           filenames = {
               item["filename"]
@@ -64,10 +71,13 @@ jobs:
 
           with open(output, "a", encoding="utf-8") as handle:
               if missing:
-                  print(
+                  message = (
                       f"forformat {version} is not fully published yet; missing wheels: "
                       + ", ".join(missing)
                   )
+                  if requested:
+                      raise SystemExit(message)
+                  print(message)
                   handle.write("complete=false\n")
               else:
                   handle.write("complete=true\n")
@@ -180,3 +190,22 @@ jobs:
           git tag -a "$tag" -m "forformat $version"
           git push origin HEAD:master
           git push origin "$tag"
+
+      - name: Ensure GitHub release
+        if: steps.release.outputs.complete == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+          tag="v$version"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh release create "$tag" \
+            --verify-tag \
+            --title "forformat pre-commit $tag" \
+            --notes "Pre-commit hooks pinned to forformat $version."
