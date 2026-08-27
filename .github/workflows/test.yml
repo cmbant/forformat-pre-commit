@@ -1,0 +1,54 @@
+name: Test hooks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install mirror and pre-commit
+        run: |
+          python -m pip install --upgrade pip pre-commit
+          python -m pip install .
+      - name: Validate package and hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected=$(
+            python - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as handle:
+              dependencies = tomllib.load(handle)["project"]["dependencies"]
+
+          pins = [item.split("==", 1)[1] for item in dependencies if item.startswith("forformat==")]
+          if len(pins) != 1:
+              raise SystemExit("expected exactly one forformat dependency pin")
+          print(pins[0])
+          PY
+          )
+
+          test "$(forformat --version)" = "forformat $expected"
+          pre-commit validate-manifest .pre-commit-hooks.yaml
+
+          cat > smoke.f90 <<'F90'
+          MODULE Smoke
+          CONTAINS
+          SUBROUTINE Run()
+          END SUBROUTINE Run
+          END MODULE Smoke
+          F90
+
+          pre-commit try-repo . forformat --files smoke.f90
+          pre-commit try-repo . forformat-check --files smoke.f90
+          grep -Fxq 'module Smoke' smoke.f90
