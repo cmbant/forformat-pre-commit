@@ -29,12 +29,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          version=$(
-            python - <<'PY'
+          python - "$GITHUB_OUTPUT" <<'PY'
           import json
           import re
+          import sys
           from urllib.request import urlopen
 
+          output = sys.argv[1]
           with urlopen("https://pypi.org/pypi/forformat/json") as response:
               data = json.load(response)
 
@@ -60,51 +61,53 @@ jobs:
               for platform in required_platforms
               if not any(filename.endswith(platform) for filename in filenames)
           ]
-          if missing:
-              raise SystemExit(
-                  f"forformat {version} is not fully published yet; missing wheels: "
-                  + ", ".join(missing)
-              )
 
-          print(version)
+          with open(output, "a", encoding="utf-8") as handle:
+              if missing:
+                  print(
+                      f"forformat {version} is not fully published yet; missing wheels: "
+                      + ", ".join(missing)
+                  )
+                  handle.write("complete=false\n")
+              else:
+                  handle.write("complete=true\n")
+                  handle.write(f"version={version}\n")
           PY
-          )
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Check mirror state
         id: state
+        if: steps.release.outputs.complete == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
           version="${{ steps.release.outputs.version }}"
           tag="v$version"
-          pinned=$(
-            python - <<'PY'
-          import tomllib
-
-          with open("pyproject.toml", "rb") as handle:
-              dependencies = tomllib.load(handle)["project"]["dependencies"]
-
-          pins = [item.split("==", 1)[1] for item in dependencies if item.startswith("forformat==")]
-          if len(pins) != 1:
-              raise SystemExit("expected exactly one forformat dependency pin")
-          print(pins[0])
-          PY
-          )
 
           tag_exists=false
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             tag_exists=true
           fi
 
-          if [[ "$tag_exists" == true && "$pinned" != "$version" ]]; then
-            echo "$tag already exists but pyproject.toml pins forformat==$pinned" >&2
-            exit 1
-          fi
+          if [[ "$tag_exists" == true ]]; then
+            tag_pinned=$(
+              git show "$tag:pyproject.toml" | python -c '
+          import sys
+          import tomllib
 
-          if [[ "$tag_exists" == true && "$pinned" == "$version" ]]; then
+          dependencies = tomllib.loads(sys.stdin.read())["project"]["dependencies"]
+          pins = [item.split("==", 1)[1] for item in dependencies if item.startswith("forformat==")]
+          if len(pins) != 1:
+              raise SystemExit("expected exactly one forformat dependency pin in existing tag")
+          print(pins[0])
+          '
+            )
+
+            if [[ "$tag_pinned" != "$version" ]]; then
+              echo "$tag already exists but its pyproject.toml pins forformat==$tag_pinned" >&2
+              exit 1
+            fi
+
             echo "needed=false" >> "$GITHUB_OUTPUT"
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
