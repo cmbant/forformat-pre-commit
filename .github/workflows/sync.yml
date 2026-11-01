@@ -36,25 +36,23 @@ jobs:
           import json
           import re
           import sys
-          from urllib.request import urlopen
+          import time
+          from urllib.request import Request, urlopen
+
+          # PyPI's JSON metadata can lag the upload by a few seconds, and the
+          # release workflow dispatches this sync right after publishing. When a
+          # version is requested explicitly, wait for the metadata to catch up.
+          ATTEMPTS = 20
+          DELAY_SECONDS = 15
 
           output = sys.argv[1]
           requested = sys.argv[2].strip()
           if requested.startswith("v"):
               requested = requested[1:]
 
-          with urlopen("https://pypi.org/pypi/forformat/json") as response:
-              data = json.load(response)
+          if requested and re.fullmatch(r"\d+\.\d+\.\d+", requested) is None:
+              raise SystemExit(f"unexpected forformat version: {requested!r}")
 
-          version = requested or data["info"]["version"]
-          if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
-              raise SystemExit(f"unexpected forformat version: {version!r}")
-
-          filenames = {
-              item["filename"]
-              for item in data["releases"].get(version, [])
-              if not item.get("yanked", False)
-          }
           required_platforms = (
               "manylinux_2_17_x86_64.musllinux_1_2_x86_64.whl",
               "manylinux_2_17_aarch64.musllinux_1_2_aarch64.whl",
@@ -63,18 +61,49 @@ jobs:
               "win_amd64.whl",
               "win_arm64.whl",
           )
-          missing = [
-              platform
-              for platform in required_platforms
-              if not any(filename.endswith(platform) for filename in filenames)
-          ]
+
+
+          def check(attempt):
+              # A changing query string keeps retries from hitting a cached copy.
+              request = Request(
+                  f"https://pypi.org/pypi/forformat/json?attempt={attempt}",
+                  headers={"Cache-Control": "no-cache"},
+              )
+              with urlopen(request) as response:
+                  data = json.load(response)
+
+              version = requested or data["info"]["version"]
+              if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+                  raise SystemExit(f"unexpected forformat version: {version!r}")
+
+              filenames = {
+                  item["filename"]
+                  for item in data["releases"].get(version, [])
+                  if not item.get("yanked", False)
+              }
+              missing = [
+                  platform
+                  for platform in required_platforms
+                  if not any(filename.endswith(platform) for filename in filenames)
+              ]
+              return version, missing
+
+
+          attempts = ATTEMPTS if requested else 1
+          for attempt in range(1, attempts + 1):
+              version, missing = check(attempt)
+              if not missing:
+                  break
+              message = (
+                  f"forformat {version} is not fully published yet; missing wheels: "
+                  + ", ".join(missing)
+              )
+              if attempt < attempts:
+                  print(f"{message} (attempt {attempt}/{attempts}; retrying in {DELAY_SECONDS}s)")
+                  time.sleep(DELAY_SECONDS)
 
           with open(output, "a", encoding="utf-8") as handle:
               if missing:
-                  message = (
-                      f"forformat {version} is not fully published yet; missing wheels: "
-                      + ", ".join(missing)
-                  )
                   if requested:
                       raise SystemExit(message)
                   print(message)
